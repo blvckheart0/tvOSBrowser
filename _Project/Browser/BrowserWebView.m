@@ -1,5 +1,7 @@
 #import "BrowserWebView.h"
 
+#import "BrowserGamepadBridge.h"
+
 #import <dlfcn.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -445,8 +447,8 @@ static NSString *BrowserYouTubeRequestCaptureScript(void) {
     "})();";
 }
 
-static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
-    if (configuration == nil) {
+static void BrowserAddUserScript(id configuration, NSString *source, BOOL forMainFrameOnly) {
+    if (configuration == nil || source.length == 0) {
         return;
     }
 
@@ -477,7 +479,7 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     }
 
     id userScript = ((id (*)(id, SEL))objc_msgSend)((id)userScriptClass, @selector(alloc));
-    userScript = ((id (*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)(userScript, userScriptInitializer, BrowserYouTubeRequestCaptureScript(), 0, NO);
+    userScript = ((id (*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)(userScript, userScriptInitializer, source, 0, forMainFrameOnly);
     if (userScript != nil) {
         ((void (*)(id, SEL, id))objc_msgSend)(userContentController, addUserScriptSelector, userScript);
     }
@@ -534,7 +536,8 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(configuration, allowsInlineMediaPlaybackSelector, allowsInlineMediaPlayback);
     }
     BrowserConfigurePrivateMediaPreferences(configuration);
-    BrowserInstallYouTubeCaptureUserScript(configuration);
+    BrowserAddUserScript(configuration, BrowserYouTubeRequestCaptureScript(), NO);
+    BrowserAddUserScript(configuration, [BrowserGamepadBridge userScriptSource], NO);
 
     id webViewObject = ((id (*)(id, SEL))objc_msgSend)((id)webViewClass, @selector(alloc));
     SEL initializer = NSSelectorFromString(@"initWithFrame:configuration:");
@@ -652,6 +655,22 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     if (self.runtimeWebView != nil && [self.runtimeWebView respondsToSelector:selector]) {
         ((id (*)(id, SEL))objc_msgSend)(self.runtimeWebView, selector);
     }
+}
+
+- (void)evaluateJavaScript:(NSString *)script completionHandler:(void (^)(id result))completionHandler {
+    SEL selector = NSSelectorFromString(@"evaluateJavaScript:completionHandler:");
+    if (script.length == 0 || self.runtimeWebView == nil || ![self.runtimeWebView respondsToSelector:selector]) {
+        if (completionHandler != nil) {
+            completionHandler(nil);
+        }
+        return;
+    }
+
+    ((void (*)(id, SEL, id, id))objc_msgSend)(self.runtimeWebView, selector, script, ^(id result, NSError *error) {
+        if (completionHandler != nil) {
+            completionHandler(error == nil ? result : nil);
+        }
+    });
 }
 
 - (NSString *)stringByEvaluatingJavaScriptFromString:(NSString *)script {

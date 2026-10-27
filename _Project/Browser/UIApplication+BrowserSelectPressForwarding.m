@@ -3,6 +3,8 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+#import "BrowserGamepadBridge.h"
+
 NSString * const BrowserGlobalSelectPressEndedNotification = @"BrowserGlobalSelectPressEndedNotification";
 static BOOL sBrowserNativeScrubTracking = NO;
 static CGFloat sBrowserNativePendingScrubPixels = 0.0;
@@ -175,6 +177,21 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
     }
 
     NSSet<UIPress *> *presses = ((id (*)(id, SEL))objc_msgSend)(event, allPressesSelector);
+
+    // While a page reads the Gamepad API, controller buttons belong to the page, not the browser UI.
+    BrowserGamepadBridge *gamepadBridge = BrowserGamepadBridge.activeBridge;
+    if (gamepadBridge != nil && presses.count > 0) {
+        BOOL suppressEvent = YES;
+        for (UIPress *press in presses) {
+            if (![gamepadBridge shouldSuppressSystemPress:press]) {
+                suppressEvent = NO;
+            }
+        }
+        if (suppressEvent) {
+            return;
+        }
+    }
+
     for (UIPress *press in presses) {
         nativeVideoPlayerViewController = BrowserFindPresentedNativeVideoPlayerViewController(self, nativeVideoPlayerClass);
         if (press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) {

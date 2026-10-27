@@ -8,6 +8,7 @@
 
 #import "BrowserMenuCoordinator.h"
 #import "BrowserDOMInteractionService.h"
+#import "BrowserGamepadBridge.h"
 #import "BrowserNavigationService.h"
 #import "BrowserPageActionCoordinator.h"
 #import "BrowserPreferencesStore.h"
@@ -33,6 +34,7 @@ static UIColor *kTextColor(void) {
 @interface ViewController () <BrowserMenuCoordinatorHost, BrowserPageActionCoordinatorHost, BrowserRemoteInputControllerHost, BrowserTabCoordinatorHost, BrowserTabOverviewControllerHost, BrowserTopBarViewDelegate, BrowserVideoPlaybackCoordinatorHost>
 
 @property (nonatomic) BrowserDOMInteractionService *domInteractionService;
+@property (nonatomic) BrowserGamepadBridge *gamepadBridge;
 @property (nonatomic) BrowserMenuCoordinator *menuCoordinator;
 @property (nonatomic) BrowserNavigationService *navigationService;
 @property (nonatomic) BrowserPageActionCoordinator *pageActionCoordinator;
@@ -118,6 +120,20 @@ static UIColor *kTextColor(void) {
                                                object:nil];
 
     [self.tabCoordinator restoreInitialStateOrCreateFirstTab];
+
+    __weak typeof(self) weakSelf = self;
+    self.gamepadBridge = [BrowserGamepadBridge new];
+    self.gamepadBridge.activeWebViewProvider = ^BrowserWebView *{
+        return weakSelf.webview;
+    };
+    self.gamepadBridge.pageInteractiveProvider = ^BOOL{
+        typeof(self) strongSelf = weakSelf;
+        return strongSelf != nil &&
+            strongSelf.presentedViewController == nil &&
+            !strongSelf.topBarFocusActive &&
+            !strongSelf.tabOverviewController.visible;
+    };
+    [self.gamepadBridge start];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -135,6 +151,7 @@ static UIColor *kTextColor(void) {
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [_gamepadBridge stop];
 }
 
 #pragma mark - Notifications
@@ -729,6 +746,7 @@ static UIColor *kTextColor(void) {
 
 - (void)webViewDidFinishLoad:(id)webView {
     [self.tabCoordinator webViewDidFinishLoad:webView];
+    [self.gamepadBridge setNeedsStateResend];
     if (self.tabOverviewController.visible) {
         BrowserTabViewModel *tab = [self.tabCoordinator tabForWebView:webView];
         NSInteger tabIndex = tab != nil ? [self.viewModel.tabs indexOfObject:tab] : NSNotFound;

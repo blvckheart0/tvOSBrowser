@@ -32,6 +32,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)goBack;
 - (void)goForward;
 - (nullable NSString *)stringByEvaluatingJavaScriptFromString:(NSString * _Nonnull)script;
+/// Evaluates script without blocking the run loop; the handler receives nil on failure.
+- (void)evaluateJavaScript:(NSString * _Nonnull)script completionHandler:(void (^ _Nullable)(id _Nullable result))completionHandler;
 - (NSString * _Nonnull)runtimeMediaPreferenceReport;
 - (void)setUserAgent:(NSString * _Nullable)userAgent;
 - (void)pauseAllMediaPlayback;
