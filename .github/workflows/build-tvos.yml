@@ -1,0 +1,49 @@
+name: Build tvOS (unsigned IPA)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, main]
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i appletv
+
+      - name: Build (no code signing)
+        working-directory: _Project
+        run: |
+          xcodebuild \
+            -project Browser.xcodeproj \
+            -target Browser \
+            -configuration Release \
+            -sdk appletvos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        working-directory: _Project
+        run: |
+          mkdir -p Payload
+          cp -R build/Release-appletvos/Browser.app Payload/
+          zip -qry tvOSBrowser-unsigned.ipa Payload
+          ls -lh tvOSBrowser-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tvOSBrowser-unsigned
+          path: _Project/tvOSBrowser-unsigned.ipa
