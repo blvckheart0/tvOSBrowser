@@ -11,6 +11,8 @@ static NSString * const kBrowserWebViewConfigurationClassName = @"WKWebViewConfi
 static NSString * const kBrowserWebsiteDataStoreClassName = @"WKWebsiteDataStore";
 static NSString * const kBrowserUserContentControllerClassName = @"WKUserContentController";
 static NSString * const kBrowserUserScriptClassName = @"WKUserScript";
+static NSString * const kBrowserWebsiteDataStoreConfigurationClassName = @"_WKWebsiteDataStoreConfiguration";
+static NSUInteger const kBrowserPerOriginStorageQuota = 1024 * 1024 * 1024;
 
 static void BrowserEnsureWebKitRuntimeLoaded(void) {
     static dispatch_once_t onceToken;
@@ -298,6 +300,82 @@ static void BrowserConfigurePrivateMediaPreferences(id configuration) {
     BrowserSetBooleanSelectorIfAvailable(preferences, @"_setVideoQualityIncludesDisplayCompositingEnabled:", YES);
 }
 
+static void BrowserSetObjectSelectorIfAvailable(id object, NSString *selectorName, id value) {
+    SEL selector = NSSelectorFromString(selectorName);
+    if (object != nil && value != nil && [object respondsToSelector:selector]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(object, selector, value);
+    }
+}
+
+static NSURL *BrowserWebsiteDataDirectory(void) {
+    // tvOS only lets apps write under Library/Caches; data there survives relaunches
+    // but the system may purge it when the device runs low on space.
+    NSURL *cachesDirectory = [NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *directory = [cachesDirectory URLByAppendingPathComponent:@"WebsiteData" isDirectory:YES];
+    [NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
+    return directory;
+}
+
+static id BrowserCreateWebsiteDataStoreConfiguration(NSURL *directory) {
+    Class configurationClass = NSClassFromString(kBrowserWebsiteDataStoreConfigurationClassName);
+    if (configurationClass == Nil) {
+        return nil;
+    }
+
+    id configuration = ((id (*)(id, SEL))objc_msgSend)((id)configurationClass, @selector(alloc));
+    SEL initWithDirectorySelector = NSSelectorFromString(@"initWithDirectory:");
+    if ([configurationClass instancesRespondToSelector:initWithDirectorySelector]) {
+        return ((id (*)(id, SEL, id))objc_msgSend)(configuration, initWithDirectorySelector, directory);
+    }
+
+    configuration = ((id (*)(id, SEL))objc_msgSend)(configuration, @selector(init));
+    NSDictionary<NSString *, NSString *> *directorySetters = @{
+        @"setGeneralStorageDirectory:": @"General",
+        @"set_webStorageDirectory:": @"LocalStorage",
+        @"set_indexedDBDatabaseDirectory:": @"IndexedDB",
+        @"set_cacheStorageDirectory:": @"CacheStorage",
+        @"set_serviceWorkerRegistrationDirectory:": @"ServiceWorkers",
+        @"setNetworkCacheDirectory:": @"NetworkCache",
+    };
+    [directorySetters enumerateKeysAndObjectsUsingBlock:^(NSString *selectorName, NSString *component, BOOL *stop) {
+        (void)stop;
+        BrowserSetObjectSelectorIfAvailable(configuration, selectorName, [directory URLByAppendingPathComponent:component isDirectory:YES]);
+    }];
+    return configuration;
+}
+
+static void BrowserConfigureWebsiteDataQuota(id configuration) {
+    BrowserSetObjectSelectorIfAvailable(configuration, @"setOriginQuotaRatio:", @0.5);
+    BrowserSetObjectSelectorIfAvailable(configuration, @"setTotalQuotaRatio:", @0.8);
+
+    SEL perOriginQuotaSelector = NSSelectorFromString(@"setPerOriginStorageQuota:");
+    if (![configuration respondsToSelector:perOriginQuotaSelector]) {
+        return;
+    }
+    NSMethodSignature *signature = [configuration methodSignatureForSelector:perOriginQuotaSelector];
+    const char *argumentType = signature.numberOfArguments == 3 ? [signature getArgumentTypeAtIndex:2] : "";
+    if (strcmp(argumentType, @encode(NSUInteger)) == 0 || strcmp(argumentType, @encode(unsigned long long)) == 0) {
+        ((void (*)(id, SEL, NSUInteger))objc_msgSend)(configuration, perOriginQuotaSelector, kBrowserPerOriginStorageQuota);
+    }
+}
+
+static id BrowserCreatePersistentWebsiteDataStore(void) {
+    Class dataStoreClass = NSClassFromString(kBrowserWebsiteDataStoreClassName);
+    SEL initWithConfigurationSelector = NSSelectorFromString(@"_initWithConfiguration:");
+    if (dataStoreClass == Nil || ![dataStoreClass instancesRespondToSelector:initWithConfigurationSelector]) {
+        return nil;
+    }
+
+    id configuration = BrowserCreateWebsiteDataStoreConfiguration(BrowserWebsiteDataDirectory());
+    if (configuration == nil) {
+        return nil;
+    }
+    BrowserConfigureWebsiteDataQuota(configuration);
+
+    id dataStore = ((id (*)(id, SEL))objc_msgSend)((id)dataStoreClass, @selector(alloc));
+    return ((id (*)(id, SEL, id))objc_msgSend)(dataStore, initWithConfigurationSelector, configuration);
+}
+
 static void BrowserEnableWebGPU(id configuration) {
     id preferences = BrowserObjectResultForGetter(configuration, @"preferences");
     SEL setEnabledSelector = NSSelectorFromString(@"_setEnabled:forFeature:");
@@ -562,6 +640,7 @@ static void BrowserAddUserScript(id configuration, NSString *source, BOOL forMai
     }
     BrowserConfigurePrivateMediaPreferences(configuration);
     BrowserEnableWebGPU(configuration);
+    BrowserSetObjectSelectorIfAvailable(configuration, @"setWebsiteDataStore:", [BrowserWebView defaultWebsiteDataStore]);
     BrowserAddUserScript(configuration, BrowserYouTubeRequestCaptureScript(), NO);
     BrowserAddUserScript(configuration, [BrowserGamepadBridge userScriptSource], NO);
 
@@ -696,6 +775,23 @@ static void BrowserAddUserScript(id configuration, NSString *source, BOOL forMai
         if (completionHandler != nil) {
             completionHandler(error == nil ? result : nil);
         }
+    });
+}
+
+- (void)callAsyncJavaScript:(NSString *)functionBody completionHandler:(void (^)(id result, NSError *error))completionHandler {
+    SEL selector = NSSelectorFromString(@"callAsyncJavaScript:arguments:inFrame:inContentWorld:completionHandler:");
+    Class contentWorldClass = NSClassFromString(@"WKContentWorld");
+    SEL pageWorldSelector = NSSelectorFromString(@"pageWorld");
+    if (self.runtimeWebView == nil ||
+        ![self.runtimeWebView respondsToSelector:selector] ||
+        ![contentWorldClass respondsToSelector:pageWorldSelector]) {
+        completionHandler(nil, [NSError errorWithDomain:@"BrowserWebView" code:1 userInfo:@{NSLocalizedDescriptionKey: @"callAsyncJavaScript is unavailable"}]);
+        return;
+    }
+
+    id pageWorld = ((id (*)(id, SEL))objc_msgSend)((id)contentWorldClass, pageWorldSelector);
+    ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(self.runtimeWebView, selector, functionBody, @{}, nil, pageWorld, ^(id result, NSError *error) {
+        completionHandler(result, error);
     });
 }
 
@@ -1050,13 +1146,40 @@ windowFeatures:(id)windowFeatures {
 }
 
 + (id)defaultWebsiteDataStore {
-    BrowserEnsureWebKitRuntimeLoaded();
-    Class dataStoreClass = NSClassFromString(kBrowserWebsiteDataStoreClassName);
-    SEL selector = NSSelectorFromString(@"defaultDataStore");
-    if (dataStoreClass == Nil || ![dataStoreClass respondsToSelector:selector]) {
-        return nil;
+    // One store shared by every tab, so cookies, storage and clearing all act on the same data.
+    static id dataStore;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        BrowserEnsureWebKitRuntimeLoaded();
+        dataStore = BrowserCreatePersistentWebsiteDataStore();
+        if (dataStore != nil) {
+            NSLog(@"[Storage] using website data store at %@", BrowserWebsiteDataDirectory().path);
+            return;
+        }
+
+        NSLog(@"[Storage] custom website data store unavailable, falling back to WebKit default");
+        Class dataStoreClass = NSClassFromString(kBrowserWebsiteDataStoreClassName);
+        SEL selector = NSSelectorFromString(@"defaultDataStore");
+        if (dataStoreClass != Nil && [dataStoreClass respondsToSelector:selector]) {
+            dataStore = ((id (*)(id, SEL))objc_msgSend)((id)dataStoreClass, selector);
+        }
+    });
+    return dataStore;
+}
+
++ (NSString *)websiteDataStoreDescription {
+    id dataStore = [self defaultWebsiteDataStore];
+    if (dataStore == nil) {
+        return @"Website data store: unavailable";
     }
-    return ((id (*)(id, SEL))objc_msgSend)((id)dataStoreClass, selector);
+
+    SEL defaultSelector = NSSelectorFromString(@"defaultDataStore");
+    Class dataStoreClass = NSClassFromString(kBrowserWebsiteDataStoreClassName);
+    BOOL isWebKitDefault = [dataStoreClass respondsToSelector:defaultSelector] &&
+        ((id (*)(id, SEL))objc_msgSend)((id)dataStoreClass, defaultSelector) == dataStore;
+    NSString *persistent = BrowserBooleanValueDescriptionForObjectAndSelector(dataStore, @"isPersistent") ?: @"unknown";
+    NSString *location = isWebKitDefault ? @"WebKit default" : BrowserWebsiteDataDirectory().path;
+    return [NSString stringWithFormat:@"Website data store: %@\nPersistent: %@", location, persistent];
 }
 
 + (id)defaultCookieStore {

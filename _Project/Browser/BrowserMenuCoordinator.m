@@ -847,6 +847,42 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     [self.host browserPresentViewController:alertController];
 }
 
+- (void)presentStorageDiagnostics {
+    BrowserWebView *webView = [self.host browserWebView];
+    NSString *storeDescription = [BrowserWebView websiteDataStoreDescription];
+    NSString *script =
+        @"const report = {};"
+         "const withTimeout = (promise) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 5000))]);"
+         "const probe = async (name, test) => {"
+             "try { report[name] = String(await withTimeout(Promise.resolve().then(test))); }"
+             "catch (e) { report[name] = 'ERROR ' + ((e && e.name) || '') + ': ' + ((e && e.message) || e); }"
+         "};"
+         "const key = '__tvosStorageProbe';"
+         "await probe('localStorage', () => { localStorage.setItem(key, '1'); const ok = localStorage.getItem(key) === '1'; localStorage.removeItem(key); return ok ? 'ok' : 'value mismatch'; });"
+         "await probe('sessionStorage', () => { sessionStorage.setItem(key, '1'); const ok = sessionStorage.getItem(key) === '1'; sessionStorage.removeItem(key); return ok ? 'ok' : 'value mismatch'; });"
+         "await probe('IndexedDB', () => new Promise((resolve, reject) => {"
+             "const request = indexedDB.open(key);"
+             "request.onsuccess = () => { request.result.close(); indexedDB.deleteDatabase(key); resolve('ok'); };"
+             "request.onerror = () => reject(request.error);"
+             "request.onblocked = () => reject(new Error('blocked'));"
+         "}));"
+         "await probe('Cache API', async () => { await caches.open(key); await caches.delete(key); return 'ok'; });"
+         "await probe('Quota', async () => { const e = await navigator.storage.estimate(); return Math.round(e.usage / 1024) + ' KB used of ' + Math.round(e.quota / 1048576) + ' MB'; });"
+         "await probe('Persisted', () => navigator.storage.persisted());"
+         "report['Origin'] = location.origin;"
+         "return Object.keys(report).map((name) => name + ': ' + report[name]).join('\\n');";
+
+    [webView callAsyncJavaScript:script completionHandler:^(id result, NSError *error) {
+        NSString *pageReport = [result isKindOfClass:[NSString class]] ? result : [NSString stringWithFormat:@"Page checks failed: %@", error.localizedDescription ?: @"no result"];
+        NSString *message = [NSString stringWithFormat:@"%@\n\n%@", storeDescription, pageReport];
+        NSLog(@"[Storage] %@", message);
+
+        UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Storage Diagnostics" message:message];
+        [alertController addAction:[self browserCancelAction]];
+        [self.host browserPresentViewController:alertController];
+    }];
+}
+
 - (void)presentWebKitRuntimeMediaPreferences {
     NSString *report = [[self.host browserWebView] runtimeMediaPreferenceReport];
     if (![self stringHasVisibleContent:report]) {
@@ -1039,6 +1075,11 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                                               handler:^{
         [self presentWebKitRuntimeMediaPreferences];
     }];
+    BrowserAdvancedMenuItem *storageDiagnosticsItem = [self advancedMenuItemWithTitle:@"Storage Diagnostics"
+                                                                                 style:UIAlertActionStyleDefault
+                                                                               handler:^{
+        [self presentStorageDiagnostics];
+    }];
     BrowserAdvancedMenuItem *clearCacheItem = [self advancedMenuItemWithTitle:@"Clear Cache"
                                                                          style:UIAlertActionStyleDestructive
                                                                        handler:^{
@@ -1080,6 +1121,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                items:@[
             mediaDiagnosticsItem,
             webkitMediaPrefsItem,
+            storageDiagnosticsItem,
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"Maintenance"
                                                items:@[

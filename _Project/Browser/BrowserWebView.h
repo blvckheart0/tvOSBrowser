@@ -34,12 +34,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)stringByEvaluatingJavaScriptFromString:(NSString * _Nonnull)script;
 /// Evaluates script without blocking the run loop; the handler receives nil on failure.
 - (void)evaluateJavaScript:(NSString * _Nonnull)script completionHandler:(void (^ _Nullable)(id _Nullable result))completionHandler;
+/// Runs an async function body in the page (await is allowed) and reports its resolved value.
+- (void)callAsyncJavaScript:(NSString * _Nonnull)functionBody completionHandler:(void (^ _Nonnull)(id _Nullable result, NSError * _Nullable error))completionHandler;
 - (NSString * _Nonnull)runtimeMediaPreferenceReport;
 - (void)setUserAgent:(NSString * _Nullable)userAgent;
 - (void)pauseAllMediaPlayback;
 
 + (nullable NSData *)cookieDataRepresentation;
 + (NSArray<NSHTTPCookie *> * _Nonnull)allCookies;
++ (NSString * _Nonnull)websiteDataStoreDescription;
 + (void)restoreCookiesFromData:(NSData * _Nullable)cookieData;
 + (void)clearCachedDataWithCompletion:(void (^ _Nullable)(void))completion;
 + (void)clearCookiesWithCompletion:(void (^ _Nullable)(void))completion;
