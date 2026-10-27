@@ -233,6 +233,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *BrowserFeatureEntriesFor
 
             NSString *lowercaseName = name.lowercaseString;
             if (![lowercaseName containsString:@"media"] &&
+                ![lowercaseName containsString:@"gpu"] &&
                 ![lowercaseName containsString:@"source"] &&
                 ![lowercaseName containsString:@"vp9"] &&
                 ![lowercaseName containsString:@"av1"] &&
@@ -295,6 +296,30 @@ static void BrowserConfigurePrivateMediaPreferences(id configuration) {
     BrowserSetBooleanSelectorIfAvailable(preferences, @"_setManagedMediaSourceEnabled:", YES);
     BrowserSetBooleanSelectorIfAvailable(preferences, @"_setMediaCapabilityGrantsEnabled:", YES);
     BrowserSetBooleanSelectorIfAvailable(preferences, @"_setVideoQualityIncludesDisplayCompositingEnabled:", YES);
+}
+
+static void BrowserEnableWebGPU(id configuration) {
+    id preferences = BrowserObjectResultForGetter(configuration, @"preferences");
+    SEL setEnabledSelector = NSSelectorFromString(@"_setEnabled:forFeature:");
+    if (preferences == nil || ![preferences respondsToSelector:setEnabledSelector]) {
+        return;
+    }
+
+    // +[WKPreferences _features] lists every runtime feature flag WebKit was built with.
+    id features = BrowserObjectResultForGetter([preferences class], @"_features");
+    if (![features conformsToProtocol:@protocol(NSFastEnumeration)]) {
+        return;
+    }
+
+    for (id feature in features) {
+        NSString *key = BrowserObjectResultForGetter(feature, @"key");
+        if ([key isKindOfClass:[NSString class]] && [key isEqualToString:@"WebGPUEnabled"]) {
+            ((void (*)(id, SEL, BOOL, id))objc_msgSend)(preferences, setEnabledSelector, YES, feature);
+            NSLog(@"[WebGPU] enabled runtime feature %@", key);
+            return;
+        }
+    }
+    NSLog(@"[WebGPU] runtime feature not present in this WebKit build");
 }
 
 static NSString *BrowserYouTubeRequestCaptureScript(void) {
@@ -536,6 +561,7 @@ static void BrowserAddUserScript(id configuration, NSString *source, BOOL forMai
         ((void (*)(id, SEL, BOOL))objc_msgSend)(configuration, allowsInlineMediaPlaybackSelector, allowsInlineMediaPlayback);
     }
     BrowserConfigurePrivateMediaPreferences(configuration);
+    BrowserEnableWebGPU(configuration);
     BrowserAddUserScript(configuration, BrowserYouTubeRequestCaptureScript(), NO);
     BrowserAddUserScript(configuration, [BrowserGamepadBridge userScriptSource], NO);
 
